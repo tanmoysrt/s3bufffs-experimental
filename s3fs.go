@@ -12,18 +12,6 @@ import (
 	"github.com/jacobsa/fuse/fuseutil"
 )
 
-/*
-Clone Filesystem
-
-- It just stores files in clone folder
-- No directory support (only files) [just for simplicity of inode management]
-- No sym links (so no CreateLink/Unlink)
-- No extra attributes (so no GetXattr/ListXattr/SetXattr/RemoveXattr)
-- No fallocate
-- File UID/GID set to 1000
-- All files are 0777 (rwx)
-*/
-
 type S3FSRead struct {
 	fuseutil.NotImplementedFileSystem
 
@@ -329,3 +317,5 @@ func (fs *S3FSRead) StatFS(ctx context.Context, op *fuseops.StatFSOp) error {
 }
 
 func (fs *S3FSRead) SyncFS(ctx context.Context, op *fuseops.SyncFSOp) error { return nil }
+
+// Utility
