@@ -76,7 +76,38 @@ func (f *S3FileNode) Read(offset int64, size int64) ([]byte, error) {
 		bytesRead += toCopy
 	}
 
+	// Prefetch logic: If more than 30% of the last block has been read, prefetch next 2 blocks
+	lastReadOffset := offset + bytesRead - 1
+	if lastReadOffset >= 0 {
+		lastBlockOffset := (lastReadOffset / f.CacheBlockSize) * f.CacheBlockSize
+		startInLastBlock := lastReadOffset - lastBlockOffset + 1
+		if startInLastBlock > f.CacheBlockSize/3 {
+			go f.readCacheBlock(lastBlockOffset + f.CacheBlockSize)
+			go f.readCacheBlock(lastBlockOffset + f.CacheBlockSize*2)
+		}
+	}
+
+	// Remove old cache blocks
+	f.removeCacheBlockBefore(offset)
+
 	return result, nil
+}
+
+func (f *S3FileNode) removeCacheBlockBefore(offset int64) {
+	// No need to go agressively
+	// If there are more than 5 blocks in cache, remove the old ones
+	if len(f.CacheBlock) < 5 {
+		return
+	}
+
+	f.CacheBlockRWMutex.Lock()
+	defer f.CacheBlockRWMutex.Unlock()
+
+	for k := range f.CacheBlock {
+		if k < offset {
+			delete(f.CacheBlock, k)
+		}
+	}
 }
 
 func (f *S3FileNode) readCacheBlock(offset int64) ([]byte, error) {
