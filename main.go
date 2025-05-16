@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 
 	"github.com/jacobsa/fuse"
 )
@@ -22,9 +23,12 @@ func main() {
 
 	server, err := NewS3FSRead([]*S3FileNode{
 		{
-			Name: "social-network.mp4",
-			Size: 0,
-			URL:  url,
+			Name:              "social-network.mp4",
+			Size:              0,
+			URL:               url,
+			CacheBlockSize:    1024 * 1024, // 1MB
+			CacheBlock:        make(map[int64]*CacheBlock),
+			CacheBlockRWMutex: sync.RWMutex{},
 		},
 	})
 	if err != nil {

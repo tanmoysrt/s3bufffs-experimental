@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/jacobsa/fuse"
@@ -34,13 +35,89 @@ type S3FSRead struct {
 }
 
 type S3FileNode struct {
-	Name string
-	Size uint64
-	URL  string
+	Name              string
+	Size              uint64
+	URL               string
+	CacheBlockSize    int64
+	CacheBlock        map[int64]*CacheBlock
+	CacheBlockRWMutex sync.RWMutex
+}
+
+type CacheBlock struct {
+	Data      []byte
+	Available bool
+	Mutex     sync.RWMutex
 }
 
 func (f *S3FileNode) Read(offset int64, size int64) ([]byte, error) {
-	return FetchFile(f.URL, offset, size)
+	if size <= 0 {
+		return nil, nil
+	}
+
+	var result []byte
+	bytesRead := int64(0)
+	for bytesRead < size {
+		blockOffset := ((offset + bytesRead) / f.CacheBlockSize) * f.CacheBlockSize
+		block, err := f.readCacheBlock(blockOffset)
+		if err != nil {
+			return nil, err
+		}
+
+		// Calculate start and end within the block
+		startInBlock := (offset + bytesRead) - blockOffset
+		bytesLeft := size - bytesRead
+		bytesInBlock := f.CacheBlockSize - startInBlock
+		toCopy := bytesInBlock
+		if bytesLeft < bytesInBlock {
+			toCopy = bytesLeft
+		}
+
+		result = append(result, block[startInBlock:startInBlock+toCopy]...)
+		bytesRead += toCopy
+	}
+
+	return result, nil
+}
+
+func (f *S3FileNode) readCacheBlock(offset int64) ([]byte, error) {
+	// Check if the block mapping available already
+	f.CacheBlockRWMutex.RLock()
+	block, exists := f.CacheBlock[offset]
+	f.CacheBlockRWMutex.RUnlock()
+	if exists {
+		block.Mutex.RLock()
+		defer block.Mutex.RUnlock()
+		if block.Available {
+			return block.Data, nil
+		} else {
+			return nil, fmt.Errorf("block not available")
+		}
+	} else {
+		// Block not available, so create a new one
+		block = &CacheBlock{
+			Data:      make([]byte, f.CacheBlockSize),
+			Available: false,
+			Mutex:     sync.RWMutex{},
+		}
+		f.CacheBlockRWMutex.Lock()
+		f.CacheBlock[offset] = block
+		f.CacheBlockRWMutex.Unlock()
+
+		block.Mutex.Lock()
+		defer block.Mutex.Unlock()
+		data, err := FetchFile(f.URL, offset, f.CacheBlockSize)
+		if err != nil {
+			// In case of failure
+			// Remove the block from the cache store
+			f.CacheBlockRWMutex.Lock()
+			delete(f.CacheBlock, offset)
+			f.CacheBlockRWMutex.Unlock()
+			return nil, err
+		}
+		block.Data = data
+		block.Available = true
+		return data, nil
+	}
 }
 
 func NewS3FSRead(fileNodes []*S3FileNode) (fuse.Server, error) {
